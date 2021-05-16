@@ -22,11 +22,11 @@ namespace A056744
         else if (b.size() < a.size())
             return false;
 
-        for (int i = 0; i < a.size(); ++i)
+        for (size_t i = a.size(); i > 0 ; --i)
         {
-            if (a[i] != b[i])
+            if (a[i - 1] != b[i - 1])
             {
-                return b[i]; // if a is false then it is smaller
+                return b[i - 1]; // if a is false then it is smaller
             }
         }
 
@@ -106,8 +106,13 @@ namespace A056744
     template<typename TNum = uint16_t>
     class Calculate0
     {
+    // structs
     private:
-        TNum _target = 1;
+
+        struct PerNumber;
+        struct Sequence;
+        struct Action;
+        struct State;
 
         struct PerNumber {
             bool satisfied = false;
@@ -154,6 +159,54 @@ namespace A056744
             }
         };
         friend struct PerNumber;
+
+        struct Sequence
+        {
+            std::string name;
+            bitvec bits;
+            std::set<TNum> containsNumbers;
+        };
+
+        struct Action
+        {
+            std::shared_ptr<Sequence> leftSeq;
+            std::shared_ptr<Sequence> rightSeq;
+            int64_t overlapAmount;
+
+            int64_t scoreValue = -1;
+            bitvec scoredBits;
+            std::vector<std::shared_ptr<Sequence>> scoredSubsumes;
+
+            void score(State const& s)
+            {
+                scoredBits = overlap(leftSeq->bits, rightSeq->bits, overlapAmount);
+                spdlog::trace("overlap {} + {} ({}) -> {}", leftSeq->bits, rightSeq->bits, overlapAmount, scoredBits);
+
+                // check for additional numbers removed by these overlaps
+                scoreValue = overlapAmount;
+                for (auto const& seq : s.sequences)
+                    if (
+                        // removing these checks appears to improve scores, why?
+                        //seq != leftSeq && seq != rightSeq
+                        //&&
+                        contains(scoredBits, seq->bits) != -1
+                        )
+                    {
+                        scoredSubsumes.push_back(seq);
+                        scoreValue += seq->bits.size();
+                    }
+            }
+        };
+
+        struct State
+        {
+            std::vector<std::shared_ptr<Sequence>> sequences;
+        };
+
+        // state
+    private:
+        TNum _target = 1;
+
         std::vector<PerNumber> _table;
 
     public:
@@ -177,174 +230,60 @@ namespace A056744
 
             spdlog::debug("maxUncovered is {}", maxUncovered);
 
-            std::set<TNum> remainingNumbers;
-            for (auto i = maxUncovered; i <= _target; ++i)
+            State state;
+            for (TNum i = _target; i >= maxUncovered; --i)
             {
-                if (!_table[i].covered)
-                    remainingNumbers.insert(i);
+                if (_table[i].covered)
+                    continue;
+
+                Sequence seq;
+                seq.name = std::to_string(i);
+                seq.bits = _table[i].numberBits;
+                seq.containsNumbers = { i };
+                state.sequences.push_back(std::make_shared<Sequence>(seq));
             }
-
-            spdlog::debug("remainingNumbers are {}", remainingNumbers);
-
-            struct PartialSequence
-            {
-                bitvec bits;
-                std::set<TNum> containsNumbers;
-            };
-
-            struct Action
-            {
-                enum class Kind
-                {
-                    NumAndNum,
-                    NumAndPartial,
-                    PartialAndPartial,
-                };
-                Kind kind;
-                TNum srcNum = 0;
-                TNum srcNumBigger = 0;
-                size_t dstPartial;
-                size_t srcPartial;
-
-                int64_t scoreValue = -1; // reset score to -1 to force rescore of action
-                std::set<TNum> scoredNumbers;
-                bitvec scoredBits;
-                bool scoredAttachLeft; // attach srcNum or srcPartial to left.
-
-                void score(Calculate0 const& calc, std::set<TNum> remaining_nums, bitvec const& a, bitvec const& b, std::set<TNum> scored_nums_base)
-                {
-                    // TODO branch? how deal with equal scored sides?
-                    auto overlapsLeft = overlapCounts(a, b);
-                    auto overlapsRight = overlapCounts(b, a);
-                    spdlog::trace("overlaps [{}] [{}]", overlapsLeft, overlapsRight);
-
-                    // score overlaps
-                    scoreValue = 0;
-                    scoredNumbers = scored_nums_base;
-                    scoredBits = overlap(a, b, 0);
-                    scoredAttachLeft = true;
-                    for (auto left : overlapsLeft)
-                    {
-                        auto the_overlap = overlap(a, b, left);
-                        spdlog::trace(" < overlap {} + {} ({}) -> {}", a, b, left, the_overlap);
-                        // check for additional numbers removed by these overlaps
-                        std::set<TNum> scored_numbers = scored_nums_base;
-                        auto score = left;
-                        for (auto n : remaining_nums)
-                            if (!scored_numbers.contains(n) && contains(the_overlap, calc._table[n].numberBits) != -1)
-                            {
-                                scored_numbers.insert(n);
-                                score += calc._table[n].numberBits.size();
-                            }
-                        if (score > scoreValue || (score == scoreValue && smallerNumber(the_overlap, scoredBits)))
-                        {
-                            scoreValue = score;
-                            scoredNumbers = scored_numbers;
-                            scoredBits = the_overlap;
-                            scoredAttachLeft = true;
-                        }
-                    }
-                    for (auto right : overlapsRight)
-                    {
-                        auto the_overlap = overlap(b, a, right);
-                        spdlog::trace(" > overlap {} + {} ({}) -> {}", b, a, right, the_overlap);
-                        // check for additional numbers removed by these overlaps
-                        std::set<TNum> scored_numbers = scored_nums_base;
-                        auto score = right;
-                        for (auto n : remaining_nums)
-                            if (!scored_numbers.contains(n) && contains(the_overlap, calc._table[n].numberBits) != -1)
-                            {
-                                scored_numbers.insert(n);
-                                score += calc._table[n].numberBits.size();
-                            }
-                        if (score > scoreValue)
-                        {
-                            scoreValue = score;
-                            scoredNumbers = scored_numbers;
-                            scoredBits = the_overlap;
-                            scoredAttachLeft = false;
-                        }
-                    }
-                }
-            };
-
-            PartialSequence final;
-            final.bits = _table[_target].numberBits;
-            final.containsNumbers.insert(_target);
-            remainingNumbers.erase(_target);
-            std::vector<PartialSequence> partials { final };
 
             size_t accumulated_score = 0;
-            std::vector<Action> actions;
-            for (TNum i = maxUncovered; i < _target; ++i)
+            while (state.sequences.size() > 1)
             {
-                for (TNum j = i + 1; j < _target; ++j)
+                std::vector<Action> actions;
+                // find possible actions
+                for (size_t i = 0; i < state.sequences.size(); ++i)
                 {
-                    Action action {
-                        .kind = Action::Kind::NumAndNum,
-                        .srcNum = i,
-                        .srcNumBigger = j
-                    };
-                    actions.push_back(action);
-                }
-            }
+                    for (size_t j = i + 1; j < state.sequences.size(); ++j)
+                    {
+                        auto const& a = state.sequences[i];
+                        auto const& b = state.sequences[j];
+                        auto overlapsLeft = overlapCounts(a->bits, b->bits);
+                        auto overlapsRight = overlapCounts(b->bits, a->bits);
+                        if (!overlapsLeft.empty() || !overlapsRight.empty())
+                            spdlog::trace("overlaps for ({}, {}) [{} | {}]", a->name, b->name, overlapsLeft, overlapsRight);
+                        overlapsLeft.push_back(0);
+                        overlapsRight.push_back(0);
 
-            size_t lastModifiedPartial = 0;
-            while (!remainingNumbers.empty() || partials.size() > 1)
-            {
-                // find new possible actions
-                for (auto n : remainingNumbers)
-                {
-                    Action action {
-                            .kind = Action::Kind::NumAndPartial,
-                            .srcNum = n,
-                            .dstPartial = lastModifiedPartial
-                    };
-                    actions.push_back(action); // TODO using only these actions makes some answers correct, aothers wrong, why?
-                }
-                for (size_t i = 0; i < partials.size(); ++i)
-                {
-                    if (lastModifiedPartial == i)
-                        continue;
-
-                    Action action {
-                            .kind = Action::Kind::PartialAndPartial,
-                            .dstPartial = std::min(lastModifiedPartial, i),
-                            .srcPartial = std::max(lastModifiedPartial, i),
-                    };
-                    actions.push_back(action);
+                        for (auto left : overlapsLeft)
+                        {
+                            actions.push_back({
+                                .leftSeq = a,
+                                .rightSeq = b,
+                                .overlapAmount = left,
+                            });
+                        }
+                        for (auto right : overlapsRight)
+                        {
+                            actions.push_back({
+                                .leftSeq = b,
+                                .rightSeq = a,
+                                .overlapAmount = right,
+                            });
+                        }
+                    }
                 }
 
-                // rescore actions
+                // score actions
                 for (Action& action : actions)
                 {
-                    PartialSequence const& sp = partials[action.srcPartial];
-                    PartialSequence const& dp = partials[action.dstPartial];
-                    std::set<TNum> seq_set;
-
-                    switch (action.kind)
-                    {
-                        // TODO check for partials in partial overlaps?
-                        case Action::Kind::NumAndNum:
-                            action.score(*this, remainingNumbers,
-                                         _table[action.srcNum].numberBits, _table[action.srcNumBigger].numberBits,
-                                         { action.srcNum, action.srcNumBigger });
-                            break;
-                        case Action::Kind::NumAndPartial:
-                            seq_set = { action.srcNum };
-                            seq_set.insert(dp.containsNumbers.begin(), dp.containsNumbers.end());
-                            action.score(*this, remainingNumbers,
-                                         _table[action.srcNum].numberBits, dp.bits,
-                                         seq_set);
-                            break;
-                        case Action::Kind::PartialAndPartial:
-                            seq_set = sp.containsNumbers;
-                            seq_set.insert(dp.containsNumbers.begin(), dp.containsNumbers.end());
-                            action.score(*this, remainingNumbers,
-                                         sp.bits, dp.bits,
-                                         seq_set);
-                            break;
-                    }
+                    action.score(state);
                 }
 
                 // choose best action
@@ -352,8 +291,19 @@ namespace A056744
                 int64_t bestScore = -1;
                 for (size_t i = 0; i < actions.size(); ++i)
                 {
-                    if (actions[i].scoreValue > bestScore)
+                    spdlog::trace("score of {} is {}, v {} at {}", i, actions[i].scoreValue, toNumber(actions[i].scoredBits), actions[i].scoredBits.size());
+                    // TODO redo this as a series of stable sorts?
+                    // Some way of choosing priority anyway
+                    if (actions[i].scoreValue > bestScore
+                        // improves greedy?
+                        || (actions[i].scoreValue == bestScore && (
+                            // choose the smallest number first
+                            smallerNumber(actions[i].scoredBits, actions[bestAction].scoredBits)
+                            // choose smallest changes first
+                            || actions[i].scoredBits.size() < actions[bestAction].scoredBits.size()
+                        )))
                     {
+                        spdlog::trace("is better!");
                         bestAction = i;
                         bestScore = actions[i].scoreValue;
                     }
@@ -363,90 +313,30 @@ namespace A056744
                 Action action = actions[bestAction];
                 assert(action.scoreValue == bestScore);
                 accumulated_score += action.scoreValue;
-                switch (action.kind)
-                {
-                    case Action::Kind::NumAndNum:
-                    {
-                        spdlog::debug("NumAndNum({1}, {2}) scored: {0}", action.scoreValue, action.srcNum, action.srcNumBigger);
-                        // build new partial
-                        PartialSequence new_partial {
-                            .bits = action.scoredBits,
-                            .containsNumbers = action.scoredNumbers
-                        };
-                        partials.push_back(new_partial);
-                        lastModifiedPartial = partials.size() - 1;
-                        spdlog::trace("partial {}, {} ({})", lastModifiedPartial, new_partial.bits, new_partial.containsNumbers);
 
-                        // correct actions and remaining numbers
-                        std::erase_if(actions,
-                            [&](Action a) { return
-                                action.scoredNumbers.contains(a.srcNum) || action.scoredNumbers.contains(a.srcNumBigger);
-                            });
-                        std::erase_if(remainingNumbers,
-                            [&](TNum n) { return
-                                action.scoredNumbers.contains(n);
-                            });
-                    }   break;
+                spdlog::debug("SeqAndSeq ({1} + {2}) scored: {0}", action.scoreValue, action.leftSeq->name, action.rightSeq->name);
+                std::set<TNum> scored_numbers = action.leftSeq->containsNumbers;
+                scored_numbers.insert(action.rightSeq->containsNumbers.begin(), action.rightSeq->containsNumbers.end());
+                for (auto s : action.scoredSubsumes)
+                    scored_numbers.insert(s->containsNumbers.begin(), s->containsNumbers.end());
 
-                    case Action::Kind::NumAndPartial:
-                    {
-                        spdlog::debug("NumAndPartial({1}, {2}) scored: {0}", action.scoreValue, action.srcNum, action.dstPartial);
-                        // build new partial
-                        partials[action.dstPartial].bits = action.scoredBits;
-                        partials[action.dstPartial].containsNumbers = action.scoredNumbers;
-                        lastModifiedPartial = action.dstPartial;
-                        spdlog::trace("partial {}, {} ({})", action.dstPartial, partials[action.dstPartial].bits, partials[action.dstPartial].containsNumbers);
+                // build new partial
+                state.sequences.push_back(std::make_shared<Sequence>(Sequence {
+                    .bits = action.scoredBits,
+                    .containsNumbers = scored_numbers
+                }));
+                spdlog::trace("made seq {}, {}, {}", state.sequences.back()->name, state.sequences.back()->bits, state.sequences.back()->containsNumbers);
 
-                        // correct actions and remaining numbers
-                        std::erase_if(actions,
-                            [&](Action a) { return
-                                action.scoredNumbers.contains(a.srcNum) || action.scoredNumbers.contains(a.srcNumBigger)
-                                || a.srcPartial == action.dstPartial || a.dstPartial == action.dstPartial;
-                            });
-                        std::erase_if(remainingNumbers,
-                            [&](TNum n) { return
-                                action.scoredNumbers.contains(n);
-                            });
-                    }   break;
+                std::erase_if(state.sequences, [&](auto s) {
+                    return s == action.leftSeq || s == action.rightSeq
+                    || std::find(action.scoredSubsumes.begin(), action.scoredSubsumes.end(), s) != action.scoredSubsumes.end();
+                });
 
-                    case Action::Kind::PartialAndPartial:
-                    {
-                        spdlog::debug("PartialAndPartial({1}, {2}) scored: {0}", action.scoreValue, action.srcPartial, action.dstPartial);
-                        // build new partial
-                        partials[action.dstPartial].bits = action.scoredBits;
-                        partials[action.dstPartial].containsNumbers = action.scoredNumbers;
-                        lastModifiedPartial = action.dstPartial;
-                        spdlog::trace("partial {}, {} ({})", action.dstPartial, partials[action.dstPartial].bits, partials[action.dstPartial].containsNumbers);
-                        partials.erase(partials.begin() + action.srcPartial);
-
-                        // correct actions and remaining numbers
-                        std::erase_if(actions,
-                            [&](Action a) { return
-                                action.scoredNumbers.contains(a.srcNum) || action.scoredNumbers.contains(a.srcNumBigger)
-                                || a.srcPartial == action.dstPartial || a.dstPartial == action.dstPartial
-                                || a.srcPartial == action.srcPartial || a.dstPartial == action.srcPartial;
-                            });
-                        std::erase_if(remainingNumbers,
-                            [&](TNum n) { return
-                                action.scoredNumbers.contains(n);
-                            });
-
-                        // fixup action indexes.
-                        for (Action& a : actions)
-                        {
-                            if (a.srcPartial > action.srcPartial)
-                                a.srcPartial -= 1;
-                            if (a.dstPartial > action.srcPartial)
-                                a.dstPartial -= 1;
-                        }
-                    }   break;
-                }
-
-                spdlog::trace("loop remainingNumbers is {}, remainingPartials count is {}", remainingNumbers, partials.size());
+                spdlog::trace("loop remainingPartials count is {}", state.sequences.size());
             }
 
             // final result is 0th partial
-            spdlog::info("a({}) is {} - {}   (acc_score: {})", _target, toNumber(partials[0].bits), partials[0].bits, accumulated_score);
+            spdlog::info("a({}) is {} - {}   (acc_score: {})", _target, toNumber(state.sequences[0]->bits), state.sequences[0]->bits, accumulated_score);
         }
     };
 }
